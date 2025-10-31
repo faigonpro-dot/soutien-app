@@ -310,49 +310,46 @@
         );
     };
 
-    // --- NEW Component: BaserowCredentialsForm ---
-    const BaserowCredentialsForm = ({ onSave, onLogout }) => {
-        const [creds, setCreds] = React.useState({
-            apiUrl: 'https://api.baserow.io', token: '', tableId: '', rowId: '', modulesField: 'modules', calendarField: 'calendarState'
-        });
-        const handleChange = (e) => setCreds({ ...creds, [e.target.name]: e.target.value });
-        const handleSubmit = (e) => { e.preventDefault(); onSave(creds); };
-        const inputClasses = "w-full px-3 py-2 text-white bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500";
-        const labelClasses = "block text-sm font-medium text-gray-300 mb-1";
-        return (
-            <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
-                <div className="w-full max-w-md p-8 space-y-6 bg-gray-800 rounded-lg shadow-lg">
-                    <h1 className="text-2xl font-bold text-center text-sky-400">Configuration Baserow</h1>
-                    <p className="text-center text-gray-400 text-sm">Entrez vos informations Baserow pour synchroniser les données. Celles-ci seront stockées localement dans votre navigateur.</p>
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                        <div><label className={labelClasses}>URL de l'API Baserow</label><input name="apiUrl" value={creds.apiUrl} onChange={handleChange} className={inputClasses} required /></div>
-                        <div><label className={labelClasses}>Jeton d'API (API Token)</label><input name="token" type="password" value={creds.token} onChange={handleChange} placeholder="ex: fLyA..." className={inputClasses} required /></div>
-                        <div><label className={labelClasses}>ID de la Table</label><input name="tableId" value={creds.tableId} onChange={handleChange} placeholder="ex: 12345" className={inputClasses} required /></div>
-                        <div><label className={labelClasses}>ID de la Ligne</label><input name="rowId" value={creds.rowId} onChange={handleChange} placeholder="ex: 67890" className={inputClasses} required /></div>
-                        <div><label className={labelClasses}>Nom du champ "Modules"</label><input name="modulesField" value={creds.modulesField} onChange={handleChange} className={inputClasses} required /></div>
-                        <div><label className={labelClasses}>Nom du champ "Calendrier"</label><input name="calendarField" value={creds.calendarField} onChange={handleChange} className={inputClasses} required /></div>
-                        <button type="submit" className="w-full px-4 py-2 font-bold text-white bg-sky-600 rounded-md hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-sky-500 transition-colors duration-200">Enregistrer et Charger</button>
-                    </form>
-                    <button onClick={onLogout} className="w-full text-center text-sm text-gray-400 hover:text-white">Retour à l'écran de connexion</button>
-                </div>
-            </div>
-        );
+    // --- NEW: Hardcoded Baserow credentials ---
+    // ACTION REQUISE: Remplacez les valeurs ci-dessous par vos propres informations Baserow.
+    const HARCODED_BASEROW_CREDENTIALS = {
+        apiUrl: 'https://api.baserow.io', 
+        token: '7nOTtTnebOvuTmO2tL7cjmMZTfgKC2vn',       // ex: 'fLyA...'
+        tableId: '724013',    // ex: '12345'
+        rowId: '724014I',        // ex: '67890'
+        modulesField: 'modules',          // Nom du champ pour les modules
+        calendarField: 'calendarState'    // Nom du champ pour le calendrier
     };
+    
+    // --- NEW: Component to show if credentials are not set ---
+    const ConfigurationNeededScreen = () => (
+        <div className="flex items-center justify-center h-screen bg-gray-900 text-white">
+            <div className="w-full max-w-lg p-8 text-center bg-gray-800 rounded-lg shadow-lg">
+                <h1 className="text-3xl font-bold text-red-500">Action Requise</h1>
+                <p className="mt-4 text-gray-300">
+                    Les informations de connexion à Baserow doivent être intégrées directement dans le code source.
+                </p>
+                <p className="mt-2 text-gray-400">
+                    Veuillez éditer le fichier <code>index.html</code>, trouver la constante <code>HARCODED_BASEROW_CREDENTIALS</code>, et remplacer les valeurs d'exemple par vos propres informations.
+                </p>
+            </div>
+        </div>
+    );
 
     // --- FROM App.tsx ---
     const App = () => {
         const [isLoggedIn, setIsLoggedIn] = React.useState(false);
-        const [baserowCreds, setBaserowCreds] = React.useState(() => {
-            try { return JSON.parse(localStorage.getItem('baserowCreds')) || {}; } catch { return {}; }
-        });
+        const [baserowCreds, setBaserowCreds] = React.useState(HARCODED_BASEROW_CREDENTIALS);
         const [syncStatus, setSyncStatus] = React.useState('idle');
         const [data, setData] = React.useState({ modules: {}, calendarState: initialCalendarState });
         const { modules, calendarState } = data;
         const [selectedModuleInfo, setSelectedModuleInfo] = React.useState(null);
         const debouncedData = useDebounce(data, 2000);
+        
+        const isConfigured = baserowCreds.token && !baserowCreds.token.includes('ICI');
 
         React.useEffect(() => {
-            if (!baserowCreds.token) return;
+            if (!isConfigured) return;
             const fetchData = async () => {
                 setSyncStatus('loading');
                 try {
@@ -367,12 +364,12 @@
                 } catch (error) { console.error("Failed to fetch from Baserow:", error); setSyncStatus('error'); alert("Erreur lors du chargement des données depuis Baserow. Vérifiez la configuration et votre connexion."); }
             };
             fetchData();
-        }, [baserowCreds]);
+        }, [isConfigured]);
         
         const isInitialMount = React.useRef(true);
         React.useEffect(() => {
             if (isInitialMount.current) { isInitialMount.current = false; return; }
-            if (syncStatus === 'loading' || !baserowCreds.token) return;
+            if (syncStatus === 'loading' || !isConfigured) return;
             const saveData = async () => {
                 setSyncStatus('saving');
                 try {
@@ -391,7 +388,7 @@
                 } catch (error) { console.error("Failed to save to Baserow:", error); setSyncStatus('error'); }
             };
             saveData();
-        }, [debouncedData]);
+        }, [debouncedData, isConfigured]);
 
         React.useEffect(() => {
             let timer;
@@ -402,8 +399,7 @@
         }, [syncStatus]);
 
         const handleLogin = (password) => { if (password === SHARED_PASSWORD) { setIsLoggedIn(true); } else { alert('Identifiant incorrect.'); } };
-        const handleLogout = () => { setIsLoggedIn(false); setBaserowCreds({}); localStorage.removeItem('baserowCreds'); };
-        const handleSaveCreds = (creds) => { localStorage.setItem('baserowCreds', JSON.stringify(creds)); setBaserowCreds(creds); };
+        const handleLogout = () => { setIsLoggedIn(false); };
 
         const handleCreateModule = React.useCallback((moduleData) => {
             const newModule = { id: `module-${Date.now()}-${Math.random()}`, ...moduleData };
@@ -500,7 +496,7 @@
         };
 
         if (!isLoggedIn) return <LoginScreen onLogin={handleLogin} />;
-        if (!baserowCreds.token) return <BaserowCredentialsForm onSave={handleSaveCreds} onLogout={handleLogout} />;
+        if (!isConfigured) return <ConfigurationNeededScreen />;
         
         return (
             <div id="app-container" className="flex flex-col md:flex-row h-screen bg-gray-900 text-white font-sans">
@@ -508,7 +504,7 @@
                 <aside className="w-full md:w-80 p-4 bg-gray-800 shadow-lg flex flex-col gap-6 overflow-y-auto no-print">
                     <div className="flex items-center justify-between">
                       <h1 className="text-2xl font-bold text-sky-400">Panneau de Contrôle</h1>
-                      <button onClick={handleLogout} title="Déconnexion et réinitialisation" className="text-gray-400 hover:text-white">
+                      <button onClick={handleLogout} title="Déconnexion" className="text-gray-400 hover:text-white">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
                       </button>
                     </div>
