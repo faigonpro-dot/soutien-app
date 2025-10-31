@@ -83,6 +83,7 @@
     // --- FROM components/Module.tsx ---
     const Module = ({ module, sourceCellId, isSelected, onSelect }) => {
         const handleDragStart = (e) => {
+            // Baserow row ID is used as the canonical module ID
             e.dataTransfer.setData('moduleId', module.id);
             e.dataTransfer.setData('sourceCellId', sourceCellId);
         };
@@ -152,9 +153,15 @@
             <div onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave} className={`p-2 rounded-md transition-colors duration-300 min-h-[80px] flex-grow ${isDragOver ? 'bg-sky-900/50' : 'bg-gray-700/50'}`}>
                 <div className="flex justify-between items-center mb-2"><span className="text-xs font-bold text-gray-400">S{weekNumber}</span></div>
                 <div className="flex flex-col gap-1">
-                    {moduleIds.map((id, index) => modules[id] && (
-                         <Module key={`${id}-${index}`} module={modules[id]} sourceCellId={cellId} isSelected={selectedModuleId === id} onSelect={(moduleId) => onSelectModule(moduleId, cellId)} />
-                    ))}
+                    {moduleIds.map((id, index) => {
+                        const moduleData = modules[id];
+                        // Ensure module data exists before rendering
+                        if (!moduleData) {
+                            console.warn(`Module with ID ${id} not found.`);
+                            return null;
+                        }
+                        return <Module key={`${id}-${index}`} module={moduleData} sourceCellId={cellId} isSelected={selectedModuleId === id} onSelect={(moduleId) => onSelectModule(moduleId, cellId)} />
+                    })}
                 </div>
             </div>
         );
@@ -196,7 +203,7 @@
         const handleSubmit = (e) => {
             e.preventDefault();
             if (name.trim()) {
-                onCreate({ name, description, speakers, maxStudents, color: selectedColor });
+                onCreate({ name, description, speakers, maxStudents: maxStudents || null, color: selectedColor });
                 setName(''); setDescription(''); setSpeakers(''); setMaxStudents('');
             }
         };
@@ -310,18 +317,17 @@
         );
     };
 
-    // --- NEW: Hardcoded Baserow credentials ---
+    // --- Hardcoded Baserow credentials ---
     // ACTION REQUISE: Remplacez les valeurs ci-dessous par vos propres informations Baserow.
+    // L'application utilise maintenant DEUX tables séparées.
     const HARCODED_BASEROW_CREDENTIALS = {
         apiUrl: 'https://api.baserow.io', 
-        token: '7nOTtTnebOvuTmO2tL7cjmMZTfgKC2vn',       // ex: 'fLyA...'
-        tableId: '724013',    // ex: '12345'
-        rowId: '724014I',        // ex: '67890'
-        modulesField: 'Modules',          // Nom du champ pour les modules
-        calendarField: 'CalendarState'    // Nom du champ pour le calendrier
+        token: '7nOTtTnebOvuTmO2tL7cjmMZTfgKC2vn',              // ex: 'fLyA...'
+        modulesTableId: '724013', // ex: 12345
+        calendarStateTableId: '724014', // ex: 67890
     };
     
-    // --- NEW: Component to show if credentials are not set ---
+    // --- Component to show if credentials are not set ---
     const ConfigurationNeededScreen = () => (
         <div className="flex items-center justify-center h-screen bg-gray-900 text-white">
             <div className="w-full max-w-lg p-8 text-center bg-gray-800 rounded-lg shadow-lg">
@@ -330,138 +336,262 @@
                     Les informations de connexion à Baserow doivent être intégrées directement dans le code source.
                 </p>
                 <p className="mt-2 text-gray-400">
-                    Veuillez éditer le fichier <code>index.html</code>, trouver la constante <code>HARCODED_BASEROW_CREDENTIALS</code>, et remplacer les valeurs d'exemple par vos propres informations.
+                    Veuillez éditer le fichier <code>index.html</code>, trouver la constante <code>HARCODED_BASEROW_CREDENTIALS</code>, et remplacer les valeurs d'exemple par vos propres informations (Jeton API et les deux IDs de table).
                 </p>
             </div>
         </div>
     );
 
+    // --- Component for Baserow connection errors ---
+    const BaserowErrorScreen = ({ error, onRetry }) => (
+        <div className="flex items-center justify-center h-screen bg-gray-900 text-white">
+            <div className="w-full max-w-2xl p-8 bg-gray-800 rounded-lg shadow-lg">
+                <div className="text-center">
+                    <h1 className="text-3xl font-bold text-red-500">{error.title || "Erreur de Configuration"}</h1>
+                    <p className="mt-4 text-lg text-gray-300">
+                        {error.message || "Impossible de charger les données depuis Baserow."}
+                    </p>
+                    {error.details && (
+                         <pre className="mt-4 text-left bg-gray-900 p-4 rounded-md text-sm text-red-300 overflow-x-auto">
+                            <code>Détail technique : {error.details}</code>
+                        </pre>
+                    )}
+                </div>
+                <div className="mt-6 text-left text-gray-400 space-y-2">
+                    <p className="font-bold text-gray-200">Liste de vérification :</p>
+                    <ul className="list-disc list-inside space-y-1">
+                        <li>Le <strong>Jeton d'API (token)</strong> est-il correct et a-t-il les permissions de lecture/écriture ?</li>
+                        <li>L'ID de la table <strong>Modules</strong> (<code>modulesTableId</code>) est-il correct ?</li>
+                        <li>L'ID de la table <strong>CalendarState</strong> (<code>calendarStateTableId</code>) est-il correct ?</li>
+                        <li>Vos tables et leurs champs correspondent-ils bien à la structure attendue (par ex. un champ `moduleIds` dans `CalendarState`) ?</li>
+                    </ul>
+                </div>
+                 <button onClick={onRetry} className="mt-8 w-full px-4 py-2 font-bold text-white bg-sky-600 rounded-md hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-sky-500 transition-colors duration-200">
+                    Réessayer la connexion
+                </button>
+            </div>
+        </div>
+    );
+    
+    // --- Baserow API Helpers ---
+    const baserowApi = {
+        async listRows(tableId, token) {
+            const url = `${HARCODED_BASEROW_CREDENTIALS.apiUrl}/api/database/rows/table/${tableId}/?user_field_names=true&size=200`;
+            const response = await fetch(url, { headers: { 'Authorization': `Token ${token}` } });
+            if (!response.ok) {
+                const error = new Error(`HTTP error listing rows from table ${tableId}`);
+                error.response = response;
+                throw error;
+            }
+            const { results } = await response.json();
+            return results;
+        },
+        async createRow(tableId, token, data) {
+            const url = `${HARCODED_BASEROW_CREDENTIALS.apiUrl}/api/database/rows/table/${tableId}/?user_field_names=true`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Authorization': `Token ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+            if (!response.ok) throw new Error('Failed to create row');
+            return await response.json();
+        },
+        async updateRow(tableId, token, rowId, data) {
+            const url = `${HARCODED_BASEROW_CREDENTIALS.apiUrl}/api/database/rows/table/${tableId}/${rowId}/?user_field_names=true`;
+            await fetch(url, {
+                method: 'PATCH',
+                headers: { 'Authorization': `Token ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+        },
+        async deleteRow(tableId, token, rowId) {
+            const url = `${HARCODED_BASEROW_CREDENTIALS.apiUrl}/api/database/rows/table/${tableId}/${rowId}/`;
+            await fetch(url, { method: 'DELETE', headers: { 'Authorization': `Token ${token}` } });
+        }
+    };
+
+
     // --- FROM App.tsx ---
     const App = () => {
         const [isLoggedIn, setIsLoggedIn] = React.useState(false);
-        const [baserowCreds, setBaserowCreds] = React.useState(HARCODED_BASEROW_CREDENTIALS);
+        const [baserowCreds] = React.useState(HARCODED_BASEROW_CREDENTIALS);
         const [syncStatus, setSyncStatus] = React.useState('idle');
-        const [data, setData] = React.useState({ modules: {}, calendarState: initialCalendarState });
-        const { modules, calendarState } = data;
-        const [selectedModuleInfo, setSelectedModuleInfo] = React.useState(null);
-        const debouncedData = useDebounce(data, 2000);
+        const [errorInfo, setErrorInfo] = React.useState(null);
         
-        const isConfigured = baserowCreds.token && !baserowCreds.token.includes('ICI');
+        const [modules, setModules] = React.useState({});
+        const [calendarState, setCalendarState] = React.useState(initialCalendarState);
+        const [calendarRowMap, setCalendarRowMap] = React.useState({});
+
+        const [selectedModuleInfo, setSelectedModuleInfo] = React.useState(null);
+        const debouncedCalendarState = useDebounce(calendarState, 2000);
+        
+        const isConfigured = baserowCreds.token && !baserowCreds.token.includes('ICI') && baserowCreds.modulesTableId && !baserowCreds.modulesTableId.includes('ICI');
+
+        const fetchData = React.useCallback(async () => {
+            if (!isConfigured) return;
+            setSyncStatus('loading');
+            setErrorInfo(null);
+            try {
+                const [modulesData, calendarData] = await Promise.all([
+                    baserowApi.listRows(baserowCreds.modulesTableId, baserowCreds.token),
+                    baserowApi.listRows(baserowCreds.calendarStateTableId, baserowCreds.token)
+                ]);
+
+                // Process modules
+                const newModules = modulesData.reduce((acc, row) => {
+                    acc[row.id] = { ...row, maxStudents: row.maxStudents || '' }; // Use Baserow's row ID as the unique module ID
+                    return acc;
+                }, {});
+                setModules(newModules);
+                
+                // Process calendar state
+                const newCalendarState = { ...initialCalendarState };
+                const newCalendarRowMap = {};
+                calendarData.forEach(row => {
+                    if (row.cellId) {
+                         // moduleIds are stored as text, potentially null
+                        newCalendarState[row.cellId] = (row.moduleIds || '').split(',').filter(Boolean).map(id => parseInt(id, 10));
+                        newCalendarRowMap[row.cellId] = row.id;
+                    }
+                });
+                
+                // Set the palette with all loaded modules that are not yet placed
+                const placedModuleIds = new Set(Object.values(newCalendarState).flat());
+                newCalendarState.palette = Object.keys(newModules).map(id => parseInt(id, 10)).filter(id => !placedModuleIds.has(id));
+                
+                setCalendarState(newCalendarState);
+                setCalendarRowMap(newCalendarRowMap);
+
+                setSyncStatus('synced');
+            } catch (error) {
+                console.error("Failed to fetch from Baserow:", error);
+                setSyncStatus('error');
+                 let detailedError = { title: "Erreur de Connexion à Baserow", message: "Une erreur inattendue est survenue.", details: error.message };
+                 if (error.response) {
+                    const status = error.response.status;
+                    detailedError.details = `Status HTTP: ${status}.`;
+                    if (status === 401) detailedError.message = "Le jeton d'API (token) est invalide ou ne dispose pas des permissions nécessaires.";
+                    else if (status === 404) detailedError.message = "Une des tables est introuvable. Veuillez vérifier 'modulesTableId' et 'calendarStateTableId'.";
+                }
+                setErrorInfo(detailedError);
+            }
+        }, [isConfigured, baserowCreds]);
 
         React.useEffect(() => {
-            if (!isConfigured) return;
-            const fetchData = async () => {
-                setSyncStatus('loading');
-                try {
-                    const url = `${baserowCreds.apiUrl}/api/database/rows/table/${baserowCreds.tableId}/${baserowCreds.rowId}/?user_field_names=true`;
-                    const response = await fetch(url, { headers: { 'Authorization': `Token ${baserowCreds.token}` } });
-                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                    const json = await response.json();
-                    const newModules = JSON.parse(json[baserowCreds.modulesField] || '{}');
-                    const newCalendarState = JSON.parse(json[baserowCreds.calendarField] || JSON.stringify(initialCalendarState));
-                    setData({ modules: newModules, calendarState: newCalendarState });
-                    setSyncStatus('synced');
-                } catch (error) { console.error("Failed to fetch from Baserow:", error); setSyncStatus('error'); alert("Erreur lors du chargement des données depuis Baserow. Vérifiez la configuration et votre connexion."); }
-            };
-            fetchData();
-        }, [isConfigured]);
+            if (isConfigured && isLoggedIn) {
+                fetchData();
+            }
+        }, [isConfigured, isLoggedIn, fetchData]);
         
         const isInitialMount = React.useRef(true);
         React.useEffect(() => {
             if (isInitialMount.current) { isInitialMount.current = false; return; }
-            if (syncStatus === 'loading' || !isConfigured) return;
-            const saveData = async () => {
+            if (syncStatus === 'loading' || !isConfigured || errorInfo) return;
+            
+            const saveCalendarState = async () => {
                 setSyncStatus('saving');
                 try {
-                    const url = `${baserowCreds.apiUrl}/api/database/rows/table/${baserowCreds.tableId}/${baserowCreds.rowId}/?user_field_names=true`;
-                    const body = {
-                        [baserowCreds.modulesField]: JSON.stringify(debouncedData.modules),
-                        [baserowCreds.calendarField]: JSON.stringify(debouncedData.calendarState),
-                    };
-                    const response = await fetch(url, {
-                        method: 'PATCH',
-                        headers: { 'Authorization': `Token ${baserowCreds.token}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body),
-                    });
-                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    const changedCells = Object.keys(debouncedCalendarState).filter(cellId => cellId !== 'palette');
+                    
+                    for (const cellId of changedCells) {
+                        const moduleIdsString = debouncedCalendarState[cellId].join(',');
+                        const rowId = calendarRowMap[cellId];
+                        if (rowId) { // Row exists, update it
+                            await baserowApi.updateRow(baserowCreds.calendarStateTableId, baserowCreds.token, rowId, { moduleIds: moduleIdsString });
+                        } else if (debouncedCalendarState[cellId].length > 0) { // New row with content, create it
+                            const newRow = await baserowApi.createRow(baserowCreds.calendarStateTableId, baserowCreds.token, { cellId: cellId, moduleIds: moduleIdsString });
+                            setCalendarRowMap(prev => ({...prev, [cellId]: newRow.id}));
+                        }
+                    }
                     setSyncStatus('synced');
                 } catch (error) { console.error("Failed to save to Baserow:", error); setSyncStatus('error'); }
             };
-            saveData();
-        }, [debouncedData, isConfigured]);
 
-        React.useEffect(() => {
-            let timer;
-            if (syncStatus === 'synced') {
-                timer = setTimeout(() => setSyncStatus('idle'), 2000);
-            }
-            return () => clearTimeout(timer);
-        }, [syncStatus]);
+            saveCalendarState();
+        }, [debouncedCalendarState, isConfigured, errorInfo, baserowCreds]);
+
+        React.useEffect(() => { let timer; if (syncStatus === 'synced') timer = setTimeout(() => setSyncStatus('idle'), 2000); return () => clearTimeout(timer); }, [syncStatus]);
 
         const handleLogin = (password) => { if (password === SHARED_PASSWORD) { setIsLoggedIn(true); } else { alert('Identifiant incorrect.'); } };
         const handleLogout = () => { setIsLoggedIn(false); };
 
-        const handleCreateModule = React.useCallback((moduleData) => {
-            const newModule = { id: `module-${Date.now()}-${Math.random()}`, ...moduleData };
-            setData(prev => ({
-                modules: { ...prev.modules, [newModule.id]: newModule },
-                calendarState: { ...prev.calendarState, palette: [...(prev.calendarState.palette || []), newModule.id] }
-            }));
-        }, []);
+        const handleCreateModule = React.useCallback(async (moduleData) => {
+            setSyncStatus('saving');
+            try {
+                const newModuleRow = await baserowApi.createRow(baserowCreds.modulesTableId, baserowCreds.token, moduleData);
+                setModules(prev => ({ ...prev, [newModuleRow.id]: { ...newModuleRow, maxStudents: newModuleRow.maxStudents || '' } }));
+                setCalendarState(prev => ({...prev, palette: [...prev.palette, newModuleRow.id]}));
+                setSyncStatus('synced');
+            } catch (error) { console.error("Failed to create module:", error); setSyncStatus('error'); }
+        }, [baserowCreds]);
 
-        const handleDrop = React.useCallback((moduleId, sourceCellId, targetCellId) => {
-            if (!moduleId || !sourceCellId || !targetCellId || sourceCellId === targetCellId) return;
-            setData(prev => {
-                const newCalendarState = { ...prev.calendarState };
+        const handleDrop = React.useCallback((moduleIdStr, sourceCellId, targetCellId) => {
+            if (!moduleIdStr || !sourceCellId || !targetCellId || sourceCellId === targetCellId) return;
+            const moduleId = parseInt(moduleIdStr, 10);
+            setCalendarState(prev => {
+                const newCalendarState = { ...prev };
+                
                 const sourceModules = [...(newCalendarState[sourceCellId] || [])];
                 const moduleIndex = sourceModules.indexOf(moduleId);
                 if (moduleIndex > -1) sourceModules.splice(moduleIndex, 1);
                 newCalendarState[sourceCellId] = sourceModules;
+                
                 const targetModules = [...(newCalendarState[targetCellId] || [])];
-                targetModules.push(moduleId);
+                if (!targetModules.includes(moduleId)) targetModules.push(moduleId);
                 newCalendarState[targetCellId] = targetModules;
-                return { ...prev, calendarState: newCalendarState };
+                
+                return newCalendarState;
             });
             setSelectedModuleInfo(null);
         }, []);
         
         const handleSelectModule = (moduleId, cellId) => setSelectedModuleInfo(moduleId && cellId ? { id: moduleId, cellId } : null);
         
-        const handleDeleteModule = React.useCallback(() => {
+        const handleDeleteModule = React.useCallback(async () => {
             if (!selectedModuleInfo) return;
             const { id: moduleId, cellId } = selectedModuleInfo;
             if (cellId === 'palette') {
-                if (window.confirm("Supprimer ce module de la palette le retirera de tout le calendrier. Continuer ?")) {
-                    setData(prev => {
-                        const newModules = { ...prev.modules }; delete newModules[moduleId];
-                        const newCalendarState = { ...prev.calendarState };
-                        for (const key in newCalendarState) { newCalendarState[key] = newCalendarState[key].filter(id => id !== moduleId); }
-                        return { modules: newModules, calendarState: newCalendarState };
-                    });
+                if (window.confirm("Supprimer ce module de la palette le retirera de la base de données et de tout le calendrier. Continuer ?")) {
+                    setSyncStatus('saving');
+                    try {
+                        await baserowApi.deleteRow(baserowCreds.modulesTableId, baserowCreds.token, moduleId);
+                        
+                        setModules(prev => { const newModules = { ...prev }; delete newModules[moduleId]; return newModules; });
+                        setCalendarState(prev => {
+                            const newCalendarState = { ...prev };
+                            for (const key in newCalendarState) { newCalendarState[key] = newCalendarState[key].filter(id => id !== moduleId); }
+                            return newCalendarState;
+                        });
+                        setSyncStatus('synced');
+                    } catch (error) { console.error("Failed to delete module:", error); setSyncStatus('error'); }
                 }
             } else {
-                 setData(prev => {
-                    const newCalendarState = { ...prev.calendarState };
+                 setCalendarState(prev => {
+                    const newCalendarState = { ...prev };
                     const cellModules = [...(newCalendarState[cellId] || [])];
                     const indexToRemove = cellModules.indexOf(moduleId);
                     if (indexToRemove > -1) cellModules.splice(indexToRemove, 1);
                     newCalendarState[cellId] = cellModules;
-                    return { ...prev, calendarState: newCalendarState };
+                    // Also move it back to the palette if it's not there
+                    if (!newCalendarState.palette.includes(moduleId)) {
+                        newCalendarState.palette = [...newCalendarState.palette, moduleId];
+                    }
+                    return newCalendarState;
                 });
             }
             setSelectedModuleInfo(null);
-        }, [selectedModuleInfo]);
+        }, [selectedModuleInfo, baserowCreds]);
         
         const handleDuplicateModule = React.useCallback(() => {
             if (!selectedModuleInfo || selectedModuleInfo.cellId === 'palette') return;
             const { id: moduleId, cellId } = selectedModuleInfo;
-            setData(prev => {
-                const newCalendarState = { ...prev.calendarState };
+            setCalendarState(prev => {
+                const newCalendarState = { ...prev };
                 const cellModules = [...(newCalendarState[cellId] || [])];
                 const indexToDuplicate = cellModules.lastIndexOf(moduleId);
                 if (indexToDuplicate > -1) { cellModules.splice(indexToDuplicate + 1, 0, moduleId); }
                 newCalendarState[cellId] = cellModules;
-                return { ...prev, calendarState: newCalendarState };
+                return newCalendarState;
             });
             setSelectedModuleInfo(null);
         }, [selectedModuleInfo]);
@@ -487,7 +617,7 @@
                 error: { text: "Erreur ❌", color: "bg-red-500" },
             };
             const currentStatus = statusMap[syncStatus];
-            if (!currentStatus) return null;
+            if (!currentStatus || syncStatus === 'idle') return null;
             return (
                 <div className={`status-badge fixed bottom-4 right-4 px-3 py-1.5 text-sm font-medium text-white rounded-full shadow-lg ${currentStatus.color} ${syncStatus === 'idle' ? 'opacity-0' : 'opacity-100'}`}>
                     {currentStatus.text}
@@ -497,6 +627,7 @@
 
         if (!isLoggedIn) return <LoginScreen onLogin={handleLogin} />;
         if (!isConfigured) return <ConfigurationNeededScreen />;
+        if (errorInfo) return <BaserowErrorScreen error={errorInfo} onRetry={fetchData} />;
         
         return (
             <div id="app-container" className="flex flex-col md:flex-row h-screen bg-gray-900 text-white font-sans">
