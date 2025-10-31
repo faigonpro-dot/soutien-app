@@ -40,6 +40,9 @@
                 size: A3 landscape;
             }
         }
+        .status-badge {
+            transition: opacity 0.5s ease-in-out, transform 0.3s ease-in-out;
+        }
     </style>
 </head>
 <body class="bg-gray-900">
@@ -62,6 +65,20 @@
         { month: 'Mai', weeks: [19, 20, 21, 22] }, { month: 'Juin', weeks: [23, 24, 25, 26] },
         { month: 'Juillet', weeks: [27, 28, 29, 30, 31] }, { month: 'Août', weeks: [32, 33, 34, 35] },
     ];
+    const initialCalendarState = CALENDAR_STRUCTURE.reduce((acc, month) => {
+        month.weeks.forEach(week => { acc[`${month.month}-${week}`] = []; });
+        return { ...acc, palette: [] };
+    }, {});
+
+    // --- Custom Hooks ---
+    const useDebounce = (value, delay) => {
+        const [debouncedValue, setDebouncedValue] = React.useState(value);
+        React.useEffect(() => {
+            const handler = setTimeout(() => { setDebouncedValue(value); }, delay);
+            return () => { clearTimeout(handler); };
+        }, [value, delay]);
+        return debouncedValue;
+    };
 
     // --- FROM components/Module.tsx ---
     const Module = ({ module, sourceCellId, isSelected, onSelect }) => {
@@ -293,84 +310,162 @@
         );
     };
 
+    // --- NEW Component: BaserowCredentialsForm ---
+    const BaserowCredentialsForm = ({ onSave, onLogout }) => {
+        const [creds, setCreds] = React.useState({
+            apiUrl: 'https://api.baserow.io', token: '', tableId: '', rowId: '', modulesField: 'modules', calendarField: 'calendarState'
+        });
+        const handleChange = (e) => setCreds({ ...creds, [e.target.name]: e.target.value });
+        const handleSubmit = (e) => { e.preventDefault(); onSave(creds); };
+        const inputClasses = "w-full px-3 py-2 text-white bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-sky-500";
+        const labelClasses = "block text-sm font-medium text-gray-300 mb-1";
+        return (
+            <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
+                <div className="w-full max-w-md p-8 space-y-6 bg-gray-800 rounded-lg shadow-lg">
+                    <h1 className="text-2xl font-bold text-center text-sky-400">Configuration Baserow</h1>
+                    <p className="text-center text-gray-400 text-sm">Entrez vos informations Baserow pour synchroniser les données. Celles-ci seront stockées localement dans votre navigateur.</p>
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div><label className={labelClasses}>URL de l'API Baserow</label><input name="apiUrl" value={creds.apiUrl} onChange={handleChange} className={inputClasses} required /></div>
+                        <div><label className={labelClasses}>Jeton d'API (API Token)</label><input name="token" type="password" value={creds.token} onChange={handleChange} placeholder="ex: fLyA..." className={inputClasses} required /></div>
+                        <div><label className={labelClasses}>ID de la Table</label><input name="tableId" value={creds.tableId} onChange={handleChange} placeholder="ex: 12345" className={inputClasses} required /></div>
+                        <div><label className={labelClasses}>ID de la Ligne</label><input name="rowId" value={creds.rowId} onChange={handleChange} placeholder="ex: 67890" className={inputClasses} required /></div>
+                        <div><label className={labelClasses}>Nom du champ "Modules"</label><input name="modulesField" value={creds.modulesField} onChange={handleChange} className={inputClasses} required /></div>
+                        <div><label className={labelClasses}>Nom du champ "Calendrier"</label><input name="calendarField" value={creds.calendarField} onChange={handleChange} className={inputClasses} required /></div>
+                        <button type="submit" className="w-full px-4 py-2 font-bold text-white bg-sky-600 rounded-md hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-sky-500 transition-colors duration-200">Enregistrer et Charger</button>
+                    </form>
+                    <button onClick={onLogout} className="w-full text-center text-sm text-gray-400 hover:text-white">Retour à l'écran de connexion</button>
+                </div>
+            </div>
+        );
+    };
+
     // --- FROM App.tsx ---
     const App = () => {
         const [isLoggedIn, setIsLoggedIn] = React.useState(false);
-        const [modules, setModules] = React.useState(() => {
-            try { return localStorage.getItem('planningAppModules') ? JSON.parse(localStorage.getItem('planningAppModules')) : {}; }
-            catch (error) { console.error("Failed to parse modules from localStorage", error); return {}; }
+        const [baserowCreds, setBaserowCreds] = React.useState(() => {
+            try { return JSON.parse(localStorage.getItem('baserowCreds')) || {}; } catch { return {}; }
         });
-        const [calendarState, setCalendarState] = React.useState(() => {
-            try { if (localStorage.getItem('planningAppCalendarState')) { return JSON.parse(localStorage.getItem('planningAppCalendarState')); } }
-            catch (error) { console.error("Failed to parse calendar state from localStorage", error); }
-            const initialState = { 'palette': [] };
-            CALENDAR_STRUCTURE.forEach(month => { month.weeks.forEach(week => { initialState[`${month.month}-${week}`] = []; }); });
-            return initialState;
-        });
+        const [syncStatus, setSyncStatus] = React.useState('idle');
+        const [data, setData] = React.useState({ modules: {}, calendarState: initialCalendarState });
+        const { modules, calendarState } = data;
         const [selectedModuleInfo, setSelectedModuleInfo] = React.useState(null);
+        const debouncedData = useDebounce(data, 2000);
 
         React.useEffect(() => {
-            try {
-                localStorage.setItem('planningAppModules', JSON.stringify(modules));
-                localStorage.setItem('planningAppCalendarState', JSON.stringify(calendarState));
-            } catch (error) { console.error("Failed to save state to localStorage", error); }
-        }, [modules, calendarState]);
+            if (!baserowCreds.token) return;
+            const fetchData = async () => {
+                setSyncStatus('loading');
+                try {
+                    const url = `${baserowCreds.apiUrl}/api/database/rows/table/${baserowCreds.tableId}/${baserowCreds.rowId}/?user_field_names=true`;
+                    const response = await fetch(url, { headers: { 'Authorization': `Token ${baserowCreds.token}` } });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    const json = await response.json();
+                    const newModules = JSON.parse(json[baserowCreds.modulesField] || '{}');
+                    const newCalendarState = JSON.parse(json[baserowCreds.calendarField] || JSON.stringify(initialCalendarState));
+                    setData({ modules: newModules, calendarState: newCalendarState });
+                    setSyncStatus('synced');
+                } catch (error) { console.error("Failed to fetch from Baserow:", error); setSyncStatus('error'); alert("Erreur lors du chargement des données depuis Baserow. Vérifiez la configuration et votre connexion."); }
+            };
+            fetchData();
+        }, [baserowCreds]);
+        
+        const isInitialMount = React.useRef(true);
+        React.useEffect(() => {
+            if (isInitialMount.current) { isInitialMount.current = false; return; }
+            if (syncStatus === 'loading' || !baserowCreds.token) return;
+            const saveData = async () => {
+                setSyncStatus('saving');
+                try {
+                    const url = `${baserowCreds.apiUrl}/api/database/rows/table/${baserowCreds.tableId}/${baserowCreds.rowId}/?user_field_names=true`;
+                    const body = {
+                        [baserowCreds.modulesField]: JSON.stringify(debouncedData.modules),
+                        [baserowCreds.calendarField]: JSON.stringify(debouncedData.calendarState),
+                    };
+                    const response = await fetch(url, {
+                        method: 'PATCH',
+                        headers: { 'Authorization': `Token ${baserowCreds.token}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    setSyncStatus('synced');
+                } catch (error) { console.error("Failed to save to Baserow:", error); setSyncStatus('error'); }
+            };
+            saveData();
+        }, [debouncedData]);
 
-        const handleLogin = (password) => {
-            if (password === SHARED_PASSWORD) { setIsLoggedIn(true); } else { alert('Identifiant incorrect.'); }
-        };
-        const handleCreateModule = React.useCallback((data) => {
-            const newModule = { id: `module-${Date.now()}-${Math.random()}`, ...data };
-            setModules(prev => ({ ...prev, [newModule.id]: newModule }));
-            setCalendarState(prev => ({ ...prev, palette: [...(prev.palette || []), newModule.id] }));
-        }, []);
-        const handleDrop = React.useCallback((moduleId, sourceCellId, targetCellId) => {
-            if (moduleId && sourceCellId && targetCellId && sourceCellId !== targetCellId) {
-                setCalendarState(prev => {
-                    const newState = { ...prev };
-                    const sourceModules = [...(newState[sourceCellId] || [])];
-                    const moduleIndex = sourceModules.indexOf(moduleId);
-                    if (moduleIndex > -1) { sourceModules.splice(moduleIndex, 1); }
-                    newState[sourceCellId] = sourceModules;
-                    const targetModules = [...(newState[targetCellId] || [])];
-                    targetModules.push(moduleId); newState[targetCellId] = targetModules;
-                    return newState;
-                });
-                setSelectedModuleInfo(null);
+        React.useEffect(() => {
+            let timer;
+            if (syncStatus === 'synced') {
+                timer = setTimeout(() => setSyncStatus('idle'), 2000);
             }
+            return () => clearTimeout(timer);
+        }, [syncStatus]);
+
+        const handleLogin = (password) => { if (password === SHARED_PASSWORD) { setIsLoggedIn(true); } else { alert('Identifiant incorrect.'); } };
+        const handleLogout = () => { setIsLoggedIn(false); setBaserowCreds({}); localStorage.removeItem('baserowCreds'); };
+        const handleSaveCreds = (creds) => { localStorage.setItem('baserowCreds', JSON.stringify(creds)); setBaserowCreds(creds); };
+
+        const handleCreateModule = React.useCallback((moduleData) => {
+            const newModule = { id: `module-${Date.now()}-${Math.random()}`, ...moduleData };
+            setData(prev => ({
+                modules: { ...prev.modules, [newModule.id]: newModule },
+                calendarState: { ...prev.calendarState, palette: [...(prev.calendarState.palette || []), newModule.id] }
+            }));
         }, []);
-        const handleSelectModule = (moduleId, cellId) => {
-            if (moduleId && cellId) { setSelectedModuleInfo({ id: moduleId, cellId }); } else { setSelectedModuleInfo(null); }
-        };
+
+        const handleDrop = React.useCallback((moduleId, sourceCellId, targetCellId) => {
+            if (!moduleId || !sourceCellId || !targetCellId || sourceCellId === targetCellId) return;
+            setData(prev => {
+                const newCalendarState = { ...prev.calendarState };
+                const sourceModules = [...(newCalendarState[sourceCellId] || [])];
+                const moduleIndex = sourceModules.indexOf(moduleId);
+                if (moduleIndex > -1) sourceModules.splice(moduleIndex, 1);
+                newCalendarState[sourceCellId] = sourceModules;
+                const targetModules = [...(newCalendarState[targetCellId] || [])];
+                targetModules.push(moduleId);
+                newCalendarState[targetCellId] = targetModules;
+                return { ...prev, calendarState: newCalendarState };
+            });
+            setSelectedModuleInfo(null);
+        }, []);
+        
+        const handleSelectModule = (moduleId, cellId) => setSelectedModuleInfo(moduleId && cellId ? { id: moduleId, cellId } : null);
+        
         const handleDeleteModule = React.useCallback(() => {
             if (!selectedModuleInfo) return;
             const { id: moduleId, cellId } = selectedModuleInfo;
             if (cellId === 'palette') {
                 if (window.confirm("Supprimer ce module de la palette le retirera de tout le calendrier. Continuer ?")) {
-                    setModules(prev => { const newModules = { ...prev }; delete newModules[moduleId]; return newModules; });
-                    setCalendarState(prev => { const newState = { ...prev }; for (const key in newState) { newState[key] = newState[key].filter(id => id !== moduleId); } return newState; });
+                    setData(prev => {
+                        const newModules = { ...prev.modules }; delete newModules[moduleId];
+                        const newCalendarState = { ...prev.calendarState };
+                        for (const key in newCalendarState) { newCalendarState[key] = newCalendarState[key].filter(id => id !== moduleId); }
+                        return { modules: newModules, calendarState: newCalendarState };
+                    });
                 }
             } else {
-                setCalendarState(prev => {
-                    const newState = { ...prev };
-                    const cellModules = [...(newState[cellId] || [])];
+                 setData(prev => {
+                    const newCalendarState = { ...prev.calendarState };
+                    const cellModules = [...(newCalendarState[cellId] || [])];
                     const indexToRemove = cellModules.indexOf(moduleId);
-                    if (indexToRemove > -1) { cellModules.splice(indexToRemove, 1); }
-                    newState[cellId] = cellModules;
-                    return newState;
+                    if (indexToRemove > -1) cellModules.splice(indexToRemove, 1);
+                    newCalendarState[cellId] = cellModules;
+                    return { ...prev, calendarState: newCalendarState };
                 });
             }
             setSelectedModuleInfo(null);
         }, [selectedModuleInfo]);
+        
         const handleDuplicateModule = React.useCallback(() => {
             if (!selectedModuleInfo || selectedModuleInfo.cellId === 'palette') return;
             const { id: moduleId, cellId } = selectedModuleInfo;
-            setCalendarState(prev => {
-                const newState = { ...prev };
-                const cellModules = [...(newState[cellId] || [])];
+            setData(prev => {
+                const newCalendarState = { ...prev.calendarState };
+                const cellModules = [...(newCalendarState[cellId] || [])];
                 const indexToDuplicate = cellModules.lastIndexOf(moduleId);
                 if (indexToDuplicate > -1) { cellModules.splice(indexToDuplicate + 1, 0, moduleId); }
-                newState[cellId] = cellModules; return newState;
+                newCalendarState[cellId] = cellModules;
+                return { ...prev, calendarState: newCalendarState };
             });
             setSelectedModuleInfo(null);
         }, [selectedModuleInfo]);
@@ -379,20 +474,44 @@
             const handleKeyDown = (event) => {
                 const target = event.target;
                 if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
-                if (event.key === 'Delete' || event.key === 'Backspace') { if(selectedModuleInfo) { handleDeleteModule(); } }
+                if (event.key === 'Delete' || event.key === 'Backspace') { if(selectedModuleInfo) handleDeleteModule(); }
                 else if ((event.ctrlKey || event.metaKey) && (event.key === 'd' || event.key === 'D')) {
                     if (selectedModuleInfo) { event.preventDefault(); handleDuplicateModule(); }
                 }
             };
             window.addEventListener('keydown', handleKeyDown);
-            return () => { window.removeEventListener('keydown', handleKeyDown); };
+            return () => window.removeEventListener('keydown', handleKeyDown);
         }, [selectedModuleInfo, handleDeleteModule, handleDuplicateModule]);
 
-        if (!isLoggedIn) { return <LoginScreen onLogin={handleLogin} />; }
+        const StatusIndicator = () => {
+            const statusMap = {
+                loading: { text: "Chargement...", color: "bg-blue-500" },
+                saving: { text: "Sauvegarde...", color: "bg-yellow-500 animate-pulse" },
+                synced: { text: "Synchronisé ✔", color: "bg-green-500" },
+                error: { text: "Erreur ❌", color: "bg-red-500" },
+            };
+            const currentStatus = statusMap[syncStatus];
+            if (!currentStatus) return null;
+            return (
+                <div className={`status-badge fixed bottom-4 right-4 px-3 py-1.5 text-sm font-medium text-white rounded-full shadow-lg ${currentStatus.color} ${syncStatus === 'idle' ? 'opacity-0' : 'opacity-100'}`}>
+                    {currentStatus.text}
+                </div>
+            );
+        };
+
+        if (!isLoggedIn) return <LoginScreen onLogin={handleLogin} />;
+        if (!baserowCreds.token) return <BaserowCredentialsForm onSave={handleSaveCreds} onLogout={handleLogout} />;
+        
         return (
             <div id="app-container" className="flex flex-col md:flex-row h-screen bg-gray-900 text-white font-sans">
+                <StatusIndicator />
                 <aside className="w-full md:w-80 p-4 bg-gray-800 shadow-lg flex flex-col gap-6 overflow-y-auto no-print">
-                    <h1 className="text-2xl font-bold text-center text-sky-400">Panneau de Contrôle</h1>
+                    <div className="flex items-center justify-between">
+                      <h1 className="text-2xl font-bold text-sky-400">Panneau de Contrôle</h1>
+                      <button onClick={handleLogout} title="Déconnexion et réinitialisation" className="text-gray-400 hover:text-white">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                      </button>
+                    </div>
                     <CreateModuleForm onCreate={handleCreateModule} />
                     <ModulePalette cellId="palette" moduleIds={calendarState['palette'] || []} modules={modules} onDrop={handleDrop} selectedModuleId={selectedModuleInfo?.id ?? null} onSelectModule={handleSelectModule} />
                 </aside>
