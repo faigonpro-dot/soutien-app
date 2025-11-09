@@ -289,60 +289,131 @@
         );
     };
 
-    // --- FROM components/PrintButton.tsx ---
-    const DownloadButton = () => {
-        const [isLoading, setIsLoading] = React.useState(false);
-        const getFileName = () => `planning-soutien-${new Date().toISOString().slice(0, 10)}`;
-        const captureCanvas = async () => {
-            const elementToCapture = document.querySelector('.printable-area');
-            if (!elementToCapture) { console.error('Printable area not found'); return null; }
-            const clone = elementToCapture.cloneNode(true);
-            const printContainer = document.createElement('div');
-            printContainer.style.position = 'absolute'; printContainer.style.left = '-9999px'; printContainer.style.top = '0px';
-            printContainer.style.width = '1920px'; clone.style.margin = '0';
-            printContainer.appendChild(clone); document.body.appendChild(printContainer);
-            let canvas = null;
-            try {
-                await new Promise(resolve => setTimeout(resolve, 300));
-                const captureWidth = 1920; const captureHeight = clone.scrollHeight;
-                canvas = await html2canvas(clone, { scale: 2, useCORS: true, backgroundColor: '#111827', width: captureWidth, height: captureHeight, windowWidth: captureWidth, windowHeight: captureHeight });
-            } catch (error) { console.error("Error during html2canvas capture:", error); } 
-            finally { document.body.removeChild(printContainer); }
-            return canvas;
-        };
-        const handleDownloadPDF = async () => {
-            setIsLoading(true);
-            try {
-                const canvas = await captureCanvas();
-                if (canvas) {
-                    const imgData = canvas.toDataURL('image/png'); const imgWidth = canvas.width; const imgHeight = canvas.height;
-                    const pdfWidth = 1190.55; const pdfHeight = (imgHeight * pdfWidth) / imgWidth;
-                    const { jsPDF } = window.jspdf;
-                    const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a3' });
-                    pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-                    pdf.save(`${getFileName()}.pdf`);
+    // --- FROM components/DocumentDownloader.tsx ---
+    const DocumentDownloader = ({ token, tableId }) => {
+        const [documents, setDocuments] = React.useState({ module: null, intervenant: null });
+        const [isLoading, setIsLoading] = React.useState(true);
+        const [error, setError] = React.useState(null);
+
+        React.useEffect(() => {
+            if (!token || !tableId || String(tableId).includes('ICI')) {
+                setError("La table des documents n'est pas configurée.");
+                setIsLoading(false);
+                return;
+            }
+
+            const fetchDocuments = async () => {
+                setIsLoading(true);
+                setError(null);
+                try {
+                    const rows = await baserowApi.listRows(tableId, token);
+                    
+                    let ficheModuleFile = null;
+                    let ficheIntervenantFile = null;
+
+                    for (const row of rows) {
+                        // More robust check for name field, checking common variations
+                        const nameField = row.Nom || row.nom || row.Name || row.name;
+                        
+                        // More robust check for file field, checking common variations
+                        const fileField = row.files || row.Files || row.File || row.file || row.Fichier || row.fichier;
+
+                        if (nameField && fileField && fileField.length > 0) {
+                            if (nameField === 'Fiche Module') {
+                                ficheModuleFile = fileField[0];
+                            } else if (nameField === 'Fiche Intervenant') {
+                                ficheIntervenantFile = fileField[0];
+                            }
+                        }
+                        
+                        // Optimization: stop searching once both are found
+                        if (ficheModuleFile && ficheIntervenantFile) {
+                            break;
+                        }
+                    }
+                    
+                    const newDocuments = { module: null, intervenant: null };
+                    if (ficheModuleFile) {
+                        newDocuments.module = { url: ficheModuleFile.url, name: ficheModuleFile.name };
+                    }
+                    if (ficheIntervenantFile) {
+                        newDocuments.intervenant = { url: ficheIntervenantFile.url, name: ficheIntervenantFile.name };
+                    }
+                    
+                    setDocuments(newDocuments);
+
+                } catch (err) {
+                    console.error("Failed to fetch documents from Baserow:", err);
+                    setError("Impossible de charger les documents. Vérifiez la configuration et la structure de la table.");
+                } finally {
+                    setIsLoading(false);
                 }
-            } catch (error) { console.error("Error generating PDF:", error); alert("Une erreur est survenue lors de la génération du PDF."); } 
-            finally { setIsLoading(false); }
+            };
+
+            fetchDocuments();
+        }, [token, tableId]);
+
+        const handleDownload = (doc) => {
+            if (!doc) return;
+            // This is a simpler and more reliable download method that avoids potential
+            // CORS issues associated with fetching the file programmatically.
+            // The browser will handle opening/downloading the file directly.
+            try {
+                const link = document.createElement('a');
+                link.href = doc.url;
+                link.target = '_blank'; // Open in a new tab to avoid navigating away
+                link.download = doc.name; // Suggest a filename to the browser
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } catch (e) {
+                console.error('Download initiation error:', e);
+                // As a fallback, just open the URL. The user can then save it manually.
+                window.open(doc.url, '_blank');
+            }
         };
+
+        const buttonClasses = "inline-flex items-center justify-center rounded-md shadow-sm px-4 py-2 text-sm font-medium text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed";
+
         return (
-            <div className="no-print">
-                <button onClick={handleDownloadPDF} disabled={isLoading} className="inline-flex items-center justify-center rounded-md shadow-sm px-4 py-2 bg-indigo-600 text-sm font-medium text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-900 focus:ring-indigo-500 transition-colors duration-200 disabled:bg-indigo-800 disabled:cursor-not-allowed">
-                    {isLoading ? 'Génération en cours...' : 'Télécharger (PDF A3)'}
-                    {!isLoading && (<svg xmlns="http://www.w3.org/2000/svg" className="ml-2 h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" /></svg>)}
-                </button>
+             <div className="no-print flex flex-col sm:flex-row gap-2">
+                {isLoading && <p className="text-gray-400 text-sm">Chargement des documents...</p>}
+                {error && <p className="text-red-400 text-sm">{error}</p>}
+                {!isLoading && !error && (
+                    <>
+                        <button
+                            onClick={() => handleDownload(documents.module)}
+                            disabled={!documents.module}
+                            className={`${buttonClasses} bg-teal-600 hover:bg-teal-700 focus:ring-teal-500`}
+                            title={documents.module ? `Télécharger ${documents.module.name}` : "Document 'Fiche Module' non trouvé. Vérifiez la colonne 'Nom' dans Baserow."}
+                        >
+                            Fiche Module
+                            <svg xmlns="http://www.w3.org/2000/svg" className="ml-2 h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+                        </button>
+                        <button
+                            onClick={() => handleDownload(documents.intervenant)}
+                            disabled={!documents.intervenant}
+                            className={`${buttonClasses} bg-sky-600 hover:bg-sky-700 focus:ring-sky-500`}
+                            title={documents.intervenant ? `Télécharger ${documents.intervenant.name}` : "Document 'Fiche Intervenant' non trouvé. Vérifiez la colonne 'Nom' dans Baserow."}
+                        >
+                            Fiche Intervenant
+                             <svg xmlns="http://www.w3.org/2000/svg" className="ml-2 h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+                        </button>
+                    </>
+                )}
             </div>
         );
     };
 
     // --- Hardcoded Baserow credentials ---
     // ACTION REQUISE: Remplacez les valeurs ci-dessous par vos propres informations Baserow.
-    // L'application utilise maintenant DEUX tables séparées.
+    // L'application utilise maintenant TROIS tables séparées.
     const HARCODED_BASEROW_CREDENTIALS = {
         apiUrl: 'https://api.baserow.io', 
         token: '7nOTtTnebOvuTmO2tL7cjmMZTfgKC2vn',              // ex: 'fLyA...'
         modulesTableId: '724013', // ex: 12345
         calendarStateTableId: '724014', // ex: 67890
+        documentsTableId: '733414', // ex: 11223
     };
     
     // --- Component to show if credentials are not set ---
@@ -354,7 +425,7 @@
                     Les informations de connexion à Baserow doivent être intégrées directement dans le code source.
                 </p>
                 <p className="mt-2 text-gray-400">
-                    Veuillez éditer le fichier <code>index.html</code>, trouver la constante <code>HARCODED_BASEROW_CREDENTIALS</code>, et remplacer les valeurs d'exemple par vos propres informations (Jeton API et les deux IDs de table).
+                    Veuillez éditer le fichier <code>index.html</code>, trouver la constante <code>HARCODED_BASEROW_CREDENTIALS</code>, et remplacer les valeurs d'exemple par vos propres informations (Jeton API et les trois IDs de table).
                 </p>
             </div>
         </div>
@@ -381,6 +452,7 @@
                         <li>Le <strong>Jeton d'API (token)</strong> est-il correct et a-t-il les permissions de lecture/écriture ?</li>
                         <li>L'ID de la table <strong>Modules</strong> (<code>modulesTableId</code>) est-il correct ?</li>
                         <li>L'ID de la table <strong>CalendarState</strong> (<code>calendarStateTableId</code>) est-il correct ?</li>
+                        <li>L'ID de la table <strong>Documents</strong> (<code>documentsTableId</code>) est-il correct ?</li>
                         <li>Vos tables et leurs champs correspondent-ils bien à la structure attendue (par ex. un champ `moduleIds` dans `CalendarState`) ?</li>
                     </ul>
                 </div>
@@ -443,7 +515,10 @@
         const [selectedModuleInfo, setSelectedModuleInfo] = React.useState(null);
         const debouncedCalendarState = useDebounce(calendarState, 2000);
         
-        const isConfigured = baserowCreds.token && !baserowCreds.token.includes('ICI') && baserowCreds.modulesTableId && !baserowCreds.modulesTableId.includes('ICI');
+        const isConfigured = baserowCreds.token && !baserowCreds.token.includes('ICI') && 
+            baserowCreds.modulesTableId && !String(baserowCreds.modulesTableId).includes('ICI') &&
+            baserowCreds.calendarStateTableId && !String(baserowCreds.calendarStateTableId).includes('ICI') &&
+            baserowCreds.documentsTableId && !String(baserowCreds.documentsTableId).includes('ICI');
 
         const fetchData = React.useCallback(async () => {
             if (!isConfigured) return;
@@ -489,7 +564,7 @@
                     const status = error.response.status;
                     detailedError.details = `Status HTTP: ${status}.`;
                     if (status === 401) detailedError.message = "Le jeton d'API (token) est invalide ou ne dispose pas des permissions nécessaires.";
-                    else if (status === 404) detailedError.message = "Une des tables est introuvable. Veuillez vérifier 'modulesTableId' et 'calendarStateTableId'.";
+                    else if (status === 404) detailedError.message = "Une des tables est introuvable. Veuillez vérifier les IDs de table.";
                 }
                 setErrorInfo(detailedError);
             }
@@ -661,9 +736,9 @@
                     <ModulePalette cellId="palette" moduleIds={calendarState['palette'] || []} modules={modules} onDrop={handleDrop} selectedModuleId={selectedModuleInfo?.id ?? null} onSelectModule={handleSelectModule} />
                 </aside>
                 <main className="flex-1 p-4 overflow-auto printable-area">
-                    <div className="flex justify-between items-start mb-4">
+                    <div className="flex flex-col sm:flex-row justify-between items-start mb-4 gap-4">
                         <h1 className="text-xl font-bold flex-grow pr-4">ORGANISATION DES MODULES DU SOUTIEN AU PARCOURS - TERMINALES PROFESSIONNELLES - 2025/2026</h1>
-                        <DownloadButton />
+                        <DocumentDownloader token={baserowCreds.token} tableId={baserowCreds.documentsTableId} />
                     </div>
                     <Calendar calendarState={calendarState} modules={modules} onDrop={handleDrop} selectedModuleId={selectedModuleInfo?.id ?? null} onSelectModule={handleSelectModule} />
                 </main>
